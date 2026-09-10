@@ -90,6 +90,31 @@ at all, is answered `401`, because it did not come from Missive: it is not a
 delivery, so it cannot count toward anybody's failure streak, and treating an
 unsigned request as acceptable would make this an open endpoint.
 
+## Why the classifier reads a field instead of making a call
+
+Labelling is `PATCH /v1/conversations/:id` rather than a post into the thread,
+because the documentation offers that endpoint to "close, reopen, move,
+assign, label, recolor, or rename conversations silently" — and a classifier
+that announced itself in every thread would be a worse product decision than a
+wrong label.
+
+The same paragraph contains the sharp part: *"When the update changes shared
+labels, label change rules still run."*
+
+This service is driven by a `label_change` rule. So writing a label can wake it
+again, with a genuinely new event — a different payload, therefore a different
+delivery key, therefore invisible to the de-duplication above, which is doing
+exactly its job by letting it through. Left alone that is a feedback loop, and
+it ends at a rate limit or at the auto-disable threshold, whichever arrives
+first. Neither ending is loud.
+
+Closing it costs nothing, because the webhook payload already carries
+`conversation.shared_labels`. The state we would be writing is in our hands
+before we write it: if the label is already there, the work is done — by us a
+moment ago, or by a person — and neither case wants a second write. A guard
+that instead asked the API "does it have the label?" would add a request to
+every event to avoid a request on a few.
+
 ## Running it
 
 ```bash
@@ -119,5 +144,7 @@ lib/missive/delivery_log.rb           SET NX claim on a derived delivery key
 lib/missive/client.rb                 one API call, net/http, short timeouts
 ```
 
-Semantics checked against
-<https://missiveapp.com/docs/developers/webhooks> on 2026-09-10.
+Checked on 2026-09-10 against
+<https://missiveapp.com/docs/developers/webhooks> (delivery semantics) and
+<https://missiveapp.com/docs/developers/rest-api/endpoints> (the conversations
+endpoint and the label-change note).
