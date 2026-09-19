@@ -133,6 +133,49 @@ The service refuses to boot without `MISSIVE_SIGNATURE_SECRET`. A webhook
 consumer that cannot verify signatures is not a degraded service, it is an open
 endpoint, and defaulting it to empty would make the failure silent.
 
+## Proving it against a live account
+
+Everything above is proven by the suite, which runs without an account. The one
+thing a suite cannot prove is that Missive's own delivery reaches this consumer
+and that the label lands — for that the service has to be on the public
+internet, behind a real rule, with a real mailbox in front of it.
+
+That check needs a Missive workspace, so it belongs to whoever owns the
+account. The steps, in the order that fails fastest:
+
+1. In Missive, create a rule of type **label change** and copy its *Signature
+   secret* into `MISSIVE_SIGNATURE_SECRET`.
+2. Create an API token (Settings → API) into `MISSIVE_API_TOKEN`, and put the
+   shared label's id into `MISSIVE_LABEL_LABEL_CHANGE`. The id, not the name:
+   the API takes ids, and a name that looks right would fail at the last step
+   with a 404 that reads like a routing problem.
+3. Expose the consumer and point the rule at it:
+
+   ```bash
+   bundle exec rackup -p 9292 &
+   bundle exec sidekiq -r ./config.ru -q webhooks &
+   ngrok http 9292            # paste the https URL into the rule, path /webhooks/missive
+   ```
+
+4. Apply any shared label to a conversation by hand.
+
+What should happen, and what each failure means:
+
+| Observed | Meaning |
+|---|---|
+| `200` with `{"status":"accepted"}`, label appears on the conversation | the whole chain works — this is the proof |
+| `401` with `invalid signature` | the secret in `.env` is not the rule's secret |
+| `200` with `{"status":"dropped","reason":"unparsable payload"}` | Missive sent a shape the parser does not know; the body is in the log, and this is deliberately not a `500` — see above |
+| `200` with `{"status":"duplicate"}` | the same delivery arrived twice, which is the documented normal case, and the claim held |
+| `accepted` but no label on the conversation | the request path did its job and the worker did not: the Sidekiq log has the API's answer — usually a token without access, or a label *name* where an id belongs |
+| nothing in the inspector at all | the rule is pointed elsewhere, or ngrok restarted and handed out a new URL |
+
+The rule wakes on its own write, and the guard for that loop is in
+`app/workers/classify_conversation_worker.rb` — the conversation is skipped
+when the label is already on it. Worth watching on the first live event: a loop
+here would show up as the same conversation cycling in the Sidekiq log, not as
+an error.
+
 ## Layout
 
 ```
